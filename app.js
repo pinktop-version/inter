@@ -114,6 +114,7 @@ function reportDetection(count, label) {
 
 // 디버그 모드: 앱이 얼굴을 화면 어디로 인식하는지 실제 픽셀 값으로 보여준다
 const debugEl = document.getElementById("debug");
+const cpuModeEl = document.getElementById("cpuMode");
 let geomAt = 0;
 function reportGeometry(lm, W, H) {
   const now = performance.now();
@@ -259,6 +260,10 @@ async function getTask(kind) {
   loading[kind] = (async () => {
     if (!vision) vision = await FilesetResolver.forVisionTasks(WASM);
     let task;
+    if (cpuModeEl?.checked) {
+      tasks[kind] = await createTask(kind, "CPU");
+      return tasks[kind];
+    }
     try {
       task = await createTask(kind, "GPU");
     } catch (err) {
@@ -339,6 +344,29 @@ btnStart.addEventListener("click", async () => {
   }
 });
 
+// GPU/CPU 전환 — 만들어 둔 추론기를 모두 버리고 다시 만든다
+cpuModeEl.addEventListener("change", async () => {
+  for (const kind of Object.keys(tasks)) {
+    try { tasks[kind]?.close?.(); } catch { /* 정리 실패는 무시 */ }
+    delete tasks[kind];
+    delete loading[kind];
+    delete lastResults[kind];
+    delete failures[kind];
+    runMode[kind] = "VIDEO";
+  }
+  note(cpuModeEl.checked ? "CPU 모드로 다시 불러옵니다…" : "GPU 모드로 다시 불러옵니다…");
+  if (running) {
+    setStatus("모델 불러오는 중…");
+    try {
+      await Promise.all(TASKS_FOR[effect].map(getTask));
+      setStatus(null);
+      note(null);
+    } catch (err) {
+      setStatus(`모델 로딩 실패: ${err.message}`);
+    }
+  }
+});
+
 /* ── 효과 전환 ───────────────────────────────────────── */
 
 document.querySelectorAll(".fx").forEach((btn) => {
@@ -392,8 +420,16 @@ function loop() {
     // 영상 프레임이 아직 준비되지 않았는데 추론을 호출하면 내부에서 ROI가
     // NaN이 되어 그래프가 영구히 깨진다. 준비된 프레임에서만 추론한다.
     const ready = video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
-    const fresh = ready && video.currentTime !== lastVideoTimes.__frame;
-    if (fresh) lastVideoTimes.__frame = video.currentTime;
+
+    // 일부 브라우저는 MediaStream 재생 중에도 currentTime을 갱신하지 않는다.
+    // 그것만 믿으면 첫 프레임 이후 추론이 영영 멈추므로, 벽시계로도 한 번씩 풀어준다.
+    const advanced = video.currentTime !== lastVideoTimes.__frame;
+    const overdue = ts - (lastVideoTimes.__at ?? -1e9) > 40;
+    const fresh = ready && (advanced || overdue);
+    if (fresh) {
+      lastVideoTimes.__frame = video.currentTime;
+      lastVideoTimes.__at = ts;
+    }
 
     // 모델별로 추론하고 결과를 캐싱한다. 실패해도 직전 결과를 유지해 화면이 흔들리지 않는다.
     const detectOf = (kind) => {
