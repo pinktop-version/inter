@@ -9,7 +9,7 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 
 function drawRoach(ctx, r, t) {
   const s = r.size;
-  const gait = t * 0.018 * (0.6 + r.speed / 90);
+  const gait = t * 0.018 * (0.6 + r.speed / 60);
 
   ctx.save();
   ctx.translate(r.x, r.y);
@@ -229,7 +229,7 @@ export class RoachGame {
       ...pos,
       size,
       angle: Math.atan2(H / 2 - pos.y, W / 2 - pos.x) + rnd(-0.5, 0.5),
-      speed: rnd(90, 150),
+      speed: rnd(45, 78),
       turn: 0,
       nextTurn: 0,
       squish: 1,
@@ -286,7 +286,7 @@ export class RoachGame {
         r.angle += r.turn * sec;
       }
 
-      const speed = r.speed * (1 + panic * 2.4);
+      const speed = r.speed * (1 + panic * 1.8);
       r.x += Math.cos(r.angle) * speed * sec;
       r.y += Math.sin(r.angle) * speed * sec;
 
