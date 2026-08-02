@@ -106,8 +106,8 @@ function reportGeometry(lm, W, H) {
 const noteEl = document.getElementById("note");
 function note(msg) {
   if (!noteEl) return;
-  noteEl.hidden = false;
-  noteEl.textContent = msg;
+  noteEl.hidden = !msg;
+  noteEl.textContent = msg ?? "";
 }
 
 /** 카메라 열기 — 안드로이드는 facingMode가 없으면 후면 카메라가 잡힌다 */
@@ -138,12 +138,18 @@ async function openCamera() {
 
 /* ── 모델 지연 로딩 ──────────────────────────────────── */
 
+// VIDEO 모드는 이전 프레임의 추적 영역(ROI)을 이어받는데, 이 값이 NaN으로 깨지면
+// 그래프가 영구히 실패한다. 그때는 IMAGE 모드로 내려간다 — 매 프레임 새로 검출하므로
+// 이어받는 상태가 없어 같은 오류가 날 수 없다.
+const runMode = { hand: "VIDEO", face: "VIDEO", body: "VIDEO" };
+
 function createTask(kind, delegate) {
   const baseOptions = { modelAssetPath: MODELS[kind], delegate };
+  const runningMode = runMode[kind];
   // 기본 임계값(0.5)은 웹캠 화질·조명에서 놓치는 경우가 많아 낮춘다
   if (kind === "hand") {
     return HandLandmarker.createFromOptions(vision, {
-      baseOptions, runningMode: "VIDEO", numHands: 2,
+      baseOptions, runningMode, numHands: 2,
       minHandDetectionConfidence: 0.3,
       minHandPresenceConfidence: 0.3,
       minTrackingConfidence: 0.3,
@@ -151,15 +157,64 @@ function createTask(kind, delegate) {
   }
   if (kind === "face") {
     return FaceLandmarker.createFromOptions(vision, {
-      baseOptions, runningMode: "VIDEO", numFaces: 1,
+      baseOptions, runningMode, numFaces: 1,
       minFaceDetectionConfidence: 0.3,
       minFacePresenceConfidence: 0.3,
       minTrackingConfidence: 0.3,
     });
   }
   return ImageSegmenter.createFromOptions(vision, {
-    baseOptions, runningMode: "VIDEO", outputCategoryMask: true,
+    baseOptions, runningMode, outputCategoryMask: true,
   });
+}
+
+/* ── 추론 실패 복구 ──────────────────────────────────── */
+
+const failures = {};
+const rebuilding = {};
+
+// 추론 그래프가 깨졌을 때 새 인스턴스로 교체한다. 교체가 끝날 때까지는
+// 기존 태스크를 그대로 두고 결과만 건너뛰어 화면이 깜빡이지 않게 한다.
+function recoverTask(kind, err) {
+  if (rebuilding[kind]) return;
+  rebuilding[kind] = true;
+  failures[kind] = (failures[kind] ?? 0) + 1;
+
+  const downgrade = failures[kind] >= 2 && runMode[kind] === "VIDEO";
+  if (downgrade) runMode[kind] = "IMAGE";
+  note(
+    downgrade
+      ? `추적 그래프가 반복 실패해 IMAGE 모드로 전환합니다 (${kind})`
+      : `추적 그래프 오류로 재시작합니다 (${kind}): ${err.message.slice(0, 80)}`
+  );
+
+  const old = tasks[kind];
+  createTask(kind, "GPU")
+    .catch(() => createTask(kind, "CPU"))
+    .then((fresh) => {
+      tasks[kind] = fresh;
+      lastResult = null;
+      lastVideoTime = -1;
+      try { old?.close?.(); } catch { /* 정리 실패는 무시 */ }
+      if (failures[kind] < 2) note(null);
+    })
+    .catch((e) => note(`추적기 재시작 실패 (${kind}): ${e.message}`))
+    .finally(() => { rebuilding[kind] = false; });
+}
+
+/** 추론 실행 — 실패하면 복구를 걸고 null을 돌려준다 */
+function runDetect(kind, task, ts) {
+  try {
+    const res = runMode[kind] === "IMAGE"
+      ? task.detect(video)
+      : task.detectForVideo(video, ts);
+    failures[kind] = 0;
+    return res;
+  } catch (err) {
+    console.error(`${kind} 추론 실패:`, err);
+    recoverTask(kind, err);
+    return null;
+  }
 }
 
 async function getTask(kind) {
@@ -266,8 +321,11 @@ function loop() {
     const fresh = video.currentTime !== lastVideoTime;
     if (fresh) lastVideoTime = video.currentTime;
     const detect = () => {
-      if (fresh || !lastResult) lastResult = task.detectForVideo(video, ts);
-      return lastResult;
+      if (fresh || !lastResult) {
+        const res = runDetect(TASK_OF[effect], task, ts);
+        if (res) lastResult = res;   // 실패 시엔 직전 결과를 유지한다
+      }
+      return lastResult ?? {};
     };
 
     try {
@@ -290,13 +348,20 @@ function loop() {
         if (debugEl.checked) reportGeometry(faces[0], W, H);
       } else {
         if (fresh) {
-          task.segmentForVideo(video, ts, (res) => {
-            if (res.categoryMask) {
+          const take = (res) => {
+            if (res?.categoryMask) {
               maskToCanvas(res.categoryMask, maskCanvas);
               hasMask = true;
               res.close();
             }
-          });
+          };
+          try {
+            if (runMode.body === "IMAGE") take(task.segment(video));
+            else task.segmentForVideo(video, ts, take);
+          } catch (err) {
+            console.error("body 추론 실패:", err);
+            recoverTask("body", err);
+          }
         }
         drawBodyEffect(ctx, video, W, H, hasMask ? maskCanvas : null);
       }
