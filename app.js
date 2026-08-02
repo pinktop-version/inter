@@ -13,7 +13,7 @@ import {
 } from "./effects.js";
 
 import { RoachGame, fingertipsOf } from "./roaches.js";
-import { FingerMessage } from "./fingers.js";
+import { FingerMessage, FingerMelody } from "./fingers.js";
 
 const WASM =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
@@ -44,8 +44,12 @@ const TASKS_FOR = {
   body: ["body"],
   roach: ["hand"],
   finger: ["hand", "face"],
+  melody: ["hand"],
 };
-const TASK_OF = { hand: "hand", face: "face", body: "body", roach: "hand", finger: "hand" };
+const TASK_OF = {
+  hand: "hand", face: "face", body: "body",
+  roach: "hand", finger: "hand", melody: "hand",
+};
 
 let effect = "hand";
 let running = false;
@@ -56,6 +60,7 @@ const lastVideoTimes = {};  // 모델별로 마지막에 처리한 영상 시각
 let loopError = false;
 const game = new RoachGame();
 const fingerMsg = new FingerMessage();
+const melody = new FingerMelody();
 let vision = null;
 const tasks = {};          // 효과별 지연 로딩된 모델
 const loading = {};        // 중복 로딩 방지
@@ -273,7 +278,31 @@ async function getTask(kind) {
 
 /* ── 카메라 ──────────────────────────────────────────── */
 
+function stopCamera() {
+  running = false;
+  if (recorder) stopRecording();
+
+  video.srcObject?.getTracks().forEach((t) => t.stop());
+  video.srcObject = null;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const k of Object.keys(lastResults)) delete lastResults[k];
+  for (const k of Object.keys(lastVideoTimes)) delete lastVideoTimes[k];
+
+  btnStart.textContent = "카메라 켜기";
+  btnStart.classList.remove("off");
+  btnRec.disabled = true;
+  btnShot.disabled = true;
+  detectEl.hidden = true;
+  lastDetectText = "";
+  setStatus("카메라가 꺼져 있습니다");
+}
+
 btnStart.addEventListener("click", async () => {
+  if (running) return stopCamera();
+
   btnStart.disabled = true;
   setStatus("카메라 권한 요청 중…");
   try {
@@ -297,9 +326,11 @@ btnStart.addEventListener("click", async () => {
 
     setStatus(null);
     running = true;
+    btnStart.disabled = false;
     btnRec.disabled = false;
     btnShot.disabled = false;
-    btnStart.textContent = "카메라 실행 중";
+    btnStart.textContent = "카메라 끄기";
+    btnStart.classList.add("off");
     requestAnimationFrame(loop);
   } catch (err) {
     console.error(err);
@@ -321,6 +352,7 @@ document.querySelectorAll(".fx").forEach((btn) => {
     loopError = false;
     if (effect === "roach") game.reset();
     if (effect === "finger") fingerMsg.reset();
+    if (effect === "melody") melody.reset();
     if (running && !TASKS_FOR[effect].every((k) => tasks[k])) {
       setStatus("모델 불러오는 중…");
       await Promise.all(TASKS_FOR[effect].map(getTask));
@@ -385,6 +417,10 @@ function loop() {
         const face = detectOf("face");
         reportDetection(hands.landmarks?.length ?? 0, "손");
         fingerMsg.draw(ctx, video, W, H, hands, face, FaceLandmarker, fingerMsgEl.value, ts);
+      } else if (effect === "melody") {
+        const hands = detect();
+        reportDetection(hands.landmarks?.length ?? 0, "손");
+        melody.draw(ctx, video, W, H, hands, ts);
       } else if (effect === "roach") {
         const dt = Math.min(64, lastFrame ? ts - lastFrame : 16);
         const tips = fingertipsOf(detect(), W, H);

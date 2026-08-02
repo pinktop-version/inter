@@ -160,6 +160,14 @@ button.primary {
 
 button.primary:hover:not(:disabled) { background: #0fbcd6; }
 
+button.primary.off {
+  background: #212630;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+button.primary.off:hover:not(:disabled) { background: #2a303c; }
+
 .effects {
   display: grid;
   gap: 8px;
