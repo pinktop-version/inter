@@ -53,7 +53,58 @@ const setStatus = (msg) => {
   statusEl.textContent = msg ?? "";
 };
 
+// 폰에서는 콘솔을 볼 수 없으므로 진단 메시지를 화면에 남긴다
+const noteEl = document.getElementById("note");
+function note(msg) {
+  if (!noteEl) return;
+  noteEl.hidden = false;
+  noteEl.textContent = msg;
+}
+
+/** 카메라 열기 — 안드로이드는 facingMode가 없으면 후면 카메라가 잡힌다 */
+async function openCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error(
+      location.protocol === "https:" || location.hostname === "localhost"
+        ? "이 브라우저는 카메라를 지원하지 않습니다. 카카오톡·인스타 등 앱 안에서 열었다면 Chrome으로 열어주세요."
+        : "https 주소로 접속해야 카메라를 쓸 수 있습니다."
+    );
+  }
+  const attempts = [
+    { video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } } },
+    { video: { facingMode: "user" } },
+    { video: true },
+  ];
+  let lastErr;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      lastErr = err;
+      console.warn("getUserMedia 실패:", constraints, err);
+    }
+  }
+  throw lastErr;
+}
+
 /* ── 모델 지연 로딩 ──────────────────────────────────── */
+
+function createTask(kind, delegate) {
+  const baseOptions = { modelAssetPath: MODELS[kind], delegate };
+  if (kind === "hand") {
+    return HandLandmarker.createFromOptions(vision, {
+      baseOptions, runningMode: "VIDEO", numHands: 2,
+    });
+  }
+  if (kind === "face") {
+    return FaceLandmarker.createFromOptions(vision, {
+      baseOptions, runningMode: "VIDEO", numFaces: 1,
+    });
+  }
+  return ImageSegmenter.createFromOptions(vision, {
+    baseOptions, runningMode: "VIDEO", outputCategoryMask: true,
+  });
+}
 
 async function getTask(kind) {
   if (tasks[kind]) return tasks[kind];
@@ -61,20 +112,14 @@ async function getTask(kind) {
 
   loading[kind] = (async () => {
     if (!vision) vision = await FilesetResolver.forVisionTasks(WASM);
-    const baseOptions = { modelAssetPath: MODELS[kind], delegate: "GPU" };
     let task;
-    if (kind === "hand") {
-      task = await HandLandmarker.createFromOptions(vision, {
-        baseOptions, runningMode: "VIDEO", numHands: 2,
-      });
-    } else if (kind === "face") {
-      task = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions, runningMode: "VIDEO", numFaces: 1,
-      });
-    } else {
-      task = await ImageSegmenter.createFromOptions(vision, {
-        baseOptions, runningMode: "VIDEO", outputCategoryMask: true,
-      });
+    try {
+      task = await createTask(kind, "GPU");
+    } catch (err) {
+      // 일부 안드로이드 GPU에서는 WebGL 델리게이트 생성이 실패한다
+      console.warn("GPU 델리게이트 실패, CPU로 전환:", err);
+      note(`GPU 가속 불가 → CPU 모드 (${err.name || "오류"})`);
+      task = await createTask(kind, "CPU");
     }
     tasks[kind] = task;
     return task;
@@ -89,11 +134,17 @@ btnStart.addEventListener("click", async () => {
   btnStart.disabled = true;
   setStatus("카메라 권한 요청 중…");
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 960 } },
-    });
+    const stream = await openCamera();
     video.srcObject = stream;
     await video.play();
+
+    // 일부 기기는 play() 직후에도 해상도가 0이라 메타데이터를 기다려야 한다
+    if (!video.videoWidth) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("카메라 영상이 시작되지 않았습니다")), 8000);
+        video.addEventListener("loadedmetadata", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -110,7 +161,9 @@ btnStart.addEventListener("click", async () => {
   } catch (err) {
     console.error(err);
     setStatus(`시작 실패: ${err.message}`);
+    note(`${err.name || "Error"}: ${err.message} / ${navigator.userAgent}`);
     btnStart.disabled = false;
+    btnStart.textContent = "다시 시도";
   }
 });
 

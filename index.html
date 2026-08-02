@@ -14,7 +14,7 @@
 
   <main>
     <div class="stage">
-      <video id="video" playsinline muted></video>
+      <video id="video" autoplay playsinline muted></video>
       <canvas id="canvas"></canvas>
       <div id="status" class="status">카메라 시작을 눌러주세요</div>
       <div id="recDot" class="rec-dot" hidden><span></span><b id="recTime">0:00</b></div>
@@ -52,7 +52,9 @@
 
       <p class="note">
         카메라 권한은 <b>localhost</b> 또는 <b>https</b>에서만 허용됩니다.
+        영상은 기기 안에서만 처리되며 서버로 전송되지 않습니다.
       </p>
+      <p id="note" class="diag" hidden></p>
     </div>
   </main>
 

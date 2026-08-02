@@ -56,7 +56,16 @@ main {
   justify-content: center;
 }
 
-#video { display: none; }
+/* display:none 으로 숨기면 일부 안드로이드 브라우저가 프레임을 디코딩하지 않는다.
+   화면 밖으로 밀어내되 렌더링 대상으로는 남겨 둔다. */
+#video {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  opacity: 0.01;
+  pointer-events: none;
+  left: -9999px;
+}
 
 #canvas {
   max-width: 100%;
@@ -221,3 +230,18 @@ button.recording {
   color: var(--muted);
   line-height: 1.5;
 }
+
+/* 폰에서 콘솔 없이 실패 원인을 확인하기 위한 진단 표시 */
+.diag {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: #2a1416;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #fca5a5;
+  word-break: break-all;
+}
+
+.diag[hidden] { display: none; }
