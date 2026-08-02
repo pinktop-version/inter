@@ -2,14 +2,7 @@ import {
   FilesetResolver,
   HandLandmarker,
   FaceLandmarker,
-  ImageSegmenter,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1";
-
-import {
-  drawFaceEffect,
-  drawBodyEffect,
-  maskToCanvas,
-} from "./effects.js";
 
 import { RoachGame, fingertipsOf } from "./roaches.js";
 import { FingerMessage, FingerMelody } from "./fingers.js";
@@ -19,7 +12,6 @@ const WASM =
 const MODELS = {
   hand: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
   face: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-  body: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
 };
 
 const video = document.getElementById("video");
@@ -29,7 +21,6 @@ const statusEl = document.getElementById("status");
 const btnStart = document.getElementById("btnStart");
 const btnRec = document.getElementById("btnRec");
 const btnShot = document.getElementById("btnShot");
-const bgText = document.getElementById("bgText");
 const fingerMsgEl = document.getElementById("fingerMsg");
 const withAudio = document.getElementById("withAudio");
 const recDot = document.getElementById("recDot");
@@ -39,15 +30,10 @@ const recTime = document.getElementById("recTime");
 // 효과마다 필요한 모델. 손가락 메시지는 손과 얼굴을 함께 쓴다.
 const TASKS_FOR = {
   roach: ["hand"],
-  finger: ["hand", "face"],
+  finger: ["hand", "face"],   // 입술 판정에 얼굴 모델이 필요하다
   melody: ["hand"],
-  face: ["face"],
-  body: ["body"],
 };
-const TASK_OF = {
-  roach: "hand", finger: "hand", melody: "hand",
-  face: "face", body: "body",
-};
+const TASK_OF = { roach: "hand", finger: "hand", melody: "hand" };
 
 let effect = "roach";
 let running = false;
@@ -62,8 +48,6 @@ const melody = new FingerMelody();
 let vision = null;
 const tasks = {};          // 효과별 지연 로딩된 모델
 const loading = {};        // 중복 로딩 방지
-const maskCanvas = document.createElement("canvas");
-let hasMask = false;
 
 const setStatus = (msg) => {
   statusEl.hidden = !msg;
@@ -75,9 +59,6 @@ const detectEl = document.getElementById("detect");
 let lastDetectText = "";
 let fpsCount = 0, fpsSince = 0, fps = 0;
 
-let missSince = 0;
-let missShown = false;
-
 function reportDetection(count, label) {
   const now = performance.now();
   fpsCount++;
@@ -85,23 +66,6 @@ function reportDetection(count, label) {
     fps = Math.round((fpsCount * 1000) / (now - fpsSince));
     fpsCount = 0;
     fpsSince = now;
-  }
-
-  // 인식이 계속 안 되면 원인 파악에 필요한 값을 알아서 보여준다
-  if (count > 0) {
-    missSince = 0;
-    if (missShown) { note(null); missShown = false; }
-  } else {
-    if (!missSince) missSince = now;
-    if (!missShown && now - missSince > 4000) {
-      missShown = true;
-      const kind = TASK_OF[effect];
-      note(
-        `인식 실패 진단 — 모드 ${runMode[kind]} / 캔버스 ${canvas.width}x${canvas.height} / ` +
-        `영상 ${video.videoWidth}x${video.videoHeight} (readyState ${video.readyState}) / ` +
-        `${fps}fps / 재시작 ${failures[kind] ?? 0}회`
-      );
-    }
   }
 
   const text = `${count > 0 ? `${label} ${count} 인식됨` : `${label} 인식 안 됨`} · ${fps}fps`;
@@ -112,31 +76,7 @@ function reportDetection(count, label) {
   detectEl.hidden = false;
 }
 
-// 디버그 모드: 앱이 얼굴을 화면 어디로 인식하는지 실제 픽셀 값으로 보여준다
-const debugEl = document.getElementById("debug");
 const cpuModeEl = document.getElementById("cpuMode");
-let geomAt = 0;
-function reportGeometry(lm, W, H) {
-  const now = performance.now();
-  if (now - geomAt < 500) return;
-  geomAt = now;
-  if (!lm) {
-    note(`캔버스 ${W}x${H} / 영상 ${video.videoWidth}x${video.videoHeight} / 얼굴 없음`);
-    return;
-  }
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
-  for (const p of lm) {
-    if (p.x < x0) x0 = p.x;
-    if (p.y < y0) y0 = p.y;
-    if (p.x > x1) x1 = p.x;
-    if (p.y > y1) y1 = p.y;
-  }
-  note(
-    `캔버스 ${W}x${H} / 영상 ${video.videoWidth}x${video.videoHeight} / 점 ${lm.length}개 / ` +
-    `얼굴 ${Math.round(x0 * W)},${Math.round(y0 * H)} ~ ${Math.round(x1 * W)},${Math.round(y1 * H)} ` +
-    `(${Math.round((x1 - x0) * W)}x${Math.round((y1 - y0) * H)}px)`
-  );
-}
 
 // 폰에서는 콘솔을 볼 수 없으므로 진단 메시지를 화면에 남긴다
 const noteEl = document.getElementById("note");
@@ -177,7 +117,7 @@ async function openCamera() {
 // VIDEO 모드는 이전 프레임의 추적 영역(ROI)을 이어받는데, 이 값이 NaN으로 깨지면
 // 그래프가 영구히 실패한다. 그때는 IMAGE 모드로 내려간다 — 매 프레임 새로 검출하므로
 // 이어받는 상태가 없어 같은 오류가 날 수 없다.
-const runMode = { hand: "VIDEO", face: "VIDEO", body: "VIDEO" };
+const runMode = { hand: "VIDEO", face: "VIDEO" };
 
 function createTask(kind, delegate) {
   const baseOptions = { modelAssetPath: MODELS[kind], delegate };
@@ -191,16 +131,11 @@ function createTask(kind, delegate) {
       minTrackingConfidence: 0.3,
     });
   }
-  if (kind === "face") {
-    return FaceLandmarker.createFromOptions(vision, {
-      baseOptions, runningMode, numFaces: 1,
-      minFaceDetectionConfidence: 0.3,
-      minFacePresenceConfidence: 0.3,
-      minTrackingConfidence: 0.3,
-    });
-  }
-  return ImageSegmenter.createFromOptions(vision, {
-    baseOptions, runningMode, outputCategoryMask: true,
+  return FaceLandmarker.createFromOptions(vision, {
+    baseOptions, runningMode, numFaces: 1,
+    minFaceDetectionConfidence: 0.3,
+    minFacePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
   });
 }
 
@@ -374,7 +309,6 @@ document.querySelectorAll(".fx").forEach((btn) => {
     document.querySelectorAll(".fx").forEach((b) => b.classList.remove("is-on"));
     btn.classList.add("is-on");
     effect = btn.dataset.fx;
-    hasMask = false;
     loopError = false;
     if (effect === "roach") game.reset();
     if (effect === "finger") fingerMsg.reset();
@@ -451,37 +385,13 @@ function loop() {
         const hands = detect();
         reportDetection(hands.landmarks?.length ?? 0, "손");
         melody.draw(ctx, video, W, H, hands, ts);
-      } else if (effect === "roach") {
+      } else {
         const dt = Math.min(64, lastFrame ? ts - lastFrame : 16);
         const tips = fingertipsOf(detect(), W, H);
         reportDetection(tips.length, "검지");
         ctx.drawImage(video, 0, 0, W, H);
         game.update(dt, W, H, tips, ts);
         game.draw(ctx, W, H, tips, ts);
-      } else if (effect === "face") {
-        const res = detect();
-        const faces = res.faceLandmarks ?? [];
-        reportDetection(faces.length, "얼굴");
-        drawFaceEffect(ctx, video, W, H, res, bgText.value, ts / 1000, FaceLandmarker, debugEl.checked);
-        if (debugEl.checked) reportGeometry(faces[0], W, H);
-      } else {
-        if (fresh) {
-          const take = (res) => {
-            if (res?.categoryMask) {
-              maskToCanvas(res.categoryMask, maskCanvas);
-              hasMask = true;
-              res.close();
-            }
-          };
-          try {
-            if (runMode.body === "IMAGE") take(task.segment(video));
-            else task.segmentForVideo(video, ts, take);
-          } catch (err) {
-            console.error("body 추론 실패:", err);
-            recoverTask("body", err);
-          }
-        }
-        drawBodyEffect(ctx, video, W, H, hasMask ? maskCanvas : null);
       }
     } catch (err) {
       // 여기서 조용히 넘어가면 화면이 원본 영상과 효과 사이에서 깜빡이기만 하고
