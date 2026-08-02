@@ -37,14 +37,22 @@ const recDot = document.getElementById("recDot");
 const recTime = document.getElementById("recTime");
 
 // 효과 → 필요한 모델 (바퀴벌레 게임은 핸드 트래킹을 재사용한다)
+// 효과마다 필요한 모델. 손가락 메시지는 손과 얼굴을 함께 쓴다.
+const TASKS_FOR = {
+  hand: ["hand"],
+  face: ["face"],
+  body: ["body"],
+  roach: ["hand"],
+  finger: ["hand", "face"],
+};
 const TASK_OF = { hand: "hand", face: "face", body: "body", roach: "hand", finger: "hand" };
 
 let effect = "hand";
 let running = false;
 let lastTs = -1;
 let lastFrame = 0;
-let lastVideoTime = -1;
-let lastResult = null;
+const lastResults = {};     // 모델별 마지막 추론 결과
+const lastVideoTimes = {};  // 모델별로 마지막에 처리한 영상 시각
 let loopError = false;
 const game = new RoachGame();
 const fingerMsg = new FingerMessage();
@@ -217,8 +225,8 @@ function recoverTask(kind, err) {
     .catch(() => createTask(kind, "CPU"))
     .then((fresh) => {
       tasks[kind] = fresh;
-      lastResult = null;
-      lastVideoTime = -1;
+      delete lastResults[kind];
+      delete lastVideoTimes[kind];
       try { old?.close?.(); } catch { /* 정리 실패는 무시 */ }
       if (failures[kind] < 2) note(null);
     })
@@ -285,7 +293,7 @@ btnStart.addEventListener("click", async () => {
     canvas.height = video.videoHeight;
 
     setStatus("모델 불러오는 중…");
-    await getTask(TASK_OF[effect]);
+    await Promise.all(TASKS_FOR[effect].map(getTask));
 
     setStatus(null);
     running = true;
@@ -310,14 +318,12 @@ document.querySelectorAll(".fx").forEach((btn) => {
     btn.classList.add("is-on");
     effect = btn.dataset.fx;
     hasMask = false;
-    lastResult = null;
-    lastVideoTime = -1;
     loopError = false;
     if (effect === "roach") game.reset();
     if (effect === "finger") fingerMsg.reset();
-    if (running && !tasks[TASK_OF[effect]]) {
+    if (running && !TASKS_FOR[effect].every((k) => tasks[k])) {
       setStatus("모델 불러오는 중…");
-      await getTask(TASK_OF[effect]);
+      await Promise.all(TASKS_FOR[effect].map(getTask));
       setStatus(null);
     }
   });
@@ -334,11 +340,12 @@ function loop() {
       (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    lastResult = null;
+    for (const k of Object.keys(lastResults)) delete lastResults[k];
   }
 
   const W = canvas.width, H = canvas.height;
-  const task = tasks[TASK_OF[effect]];
+  const needed = TASKS_FOR[effect];
+  const task = needed.every((k) => tasks[k]) ? tasks[TASK_OF[effect]] : null;
 
   // 셀피 미러링: 이후 모든 그리기는 비디오 원본 좌표계에서 이뤄진다.
   ctx.setTransform(-1, 0, 0, 1, W, 0);
@@ -355,15 +362,18 @@ function loop() {
     // 영상 프레임이 아직 준비되지 않았는데 추론을 호출하면 내부에서 ROI가
     // NaN이 되어 그래프가 영구히 깨진다. 준비된 프레임에서만 추론한다.
     const ready = video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
-    const fresh = ready && video.currentTime !== lastVideoTime;
-    if (fresh) lastVideoTime = video.currentTime;
-    const detect = () => {
-      if (ready && (fresh || !lastResult)) {
-        const res = runDetect(TASK_OF[effect], task, ts);
-        if (res) lastResult = res;   // 실패 시엔 직전 결과를 유지한다
+    const fresh = ready && video.currentTime !== lastVideoTimes.__frame;
+    if (fresh) lastVideoTimes.__frame = video.currentTime;
+
+    // 모델별로 추론하고 결과를 캐싱한다. 실패해도 직전 결과를 유지해 화면이 흔들리지 않는다.
+    const detectOf = (kind) => {
+      if (ready && (fresh || !lastResults[kind])) {
+        const res = runDetect(kind, tasks[kind], ts);
+        if (res) lastResults[kind] = res;
       }
-      return lastResult ?? {};
+      return lastResults[kind] ?? {};
     };
+    const detect = () => detectOf(TASK_OF[effect]);
 
     try {
       if (effect === "hand") {
@@ -371,9 +381,10 @@ function loop() {
         reportDetection(res.landmarks?.length ?? 0, "손");
         drawHandEffect(ctx, video, W, H, res);
       } else if (effect === "finger") {
-        const res = detect();
-        reportDetection(res.landmarks?.length ?? 0, "손");
-        fingerMsg.draw(ctx, video, W, H, res, fingerMsgEl.value, ts);
+        const hands = detectOf("hand");
+        const face = detectOf("face");
+        reportDetection(hands.landmarks?.length ?? 0, "손");
+        fingerMsg.draw(ctx, video, W, H, hands, face, FaceLandmarker, fingerMsgEl.value, ts);
       } else if (effect === "roach") {
         const dt = Math.min(64, lastFrame ? ts - lastFrame : 16);
         const tips = fingertipsOf(detect(), W, H);

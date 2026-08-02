@@ -1,12 +1,13 @@
 // Chapter 8 : 여덟 손가락 메시지 — 엄지와 맞대면 소리가 난다
 // 좌표계는 비디오 원본 픽셀 기준이며, 호출 시점의 ctx는 셀피 미러링 상태다.
 
-const THUMB_TIP = 4;
+// mcp = 손등 관절. 손끝은 입술로 가져가면 위치가 변하지만 관절은 제자리에
+// 있으므로, 글자 순서는 관절 기준으로 정해야 흔들리지 않는다.
 const FINGERS = [
-  { tip: 8, name: "검지" },
-  { tip: 12, name: "중지" },
-  { tip: 16, name: "약지" },
-  { tip: 20, name: "새끼" },
+  { tip: 8, mcp: 5, name: "검지" },
+  { tip: 12, mcp: 9, name: "중지" },
+  { tip: 16, mcp: 13, name: "약지" },
+  { tip: 20, mcp: 17, name: "새끼" },
 ];
 
 // 손가락 8개에 배정할 5음계 (C 메이저 펜타토닉)
@@ -14,6 +15,26 @@ const SCALE = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25, 587.33, 659.25];
 const HUES = [190, 205, 220, 240, 285, 320, 350, 20];
 
 /* ── 소리 ────────────────────────────────────────────── */
+
+// 글자를 음성으로 읽는다. 음성 합성을 못 쓰면 음으로 대신한다.
+const canSpeak = typeof speechSynthesis !== "undefined" &&
+  typeof SpeechSynthesisUtterance !== "undefined";
+
+function speak(char, fallbackFreq) {
+  if (!canSpeak) return tone(fallbackFreq);
+  try {
+    // 연달아 짚어도 밀리지 않도록 이전 발음을 끊는다
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(char);
+    u.lang = /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(char) ? "ko-KR" : "en-US";
+    u.rate = 0.85;
+    u.pitch = 1.15;
+    u.volume = 1;
+    speechSynthesis.speak(u);
+  } catch {
+    tone(fallbackFreq);
+  }
+}
 
 let audio = null;
 
@@ -69,6 +90,41 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+/** 얼굴 랜드마크에서 입술 중심과 크기를 구한다 */
+let lipIndices = null;
+
+function lipsOf(faceResult, FaceLandmarker, W, H) {
+  const lm = faceResult?.faceLandmarks?.[0];
+  if (!lm) return null;
+
+  if (!lipIndices) {
+    const set = new Set();
+    for (const c of FaceLandmarker.FACE_LANDMARKS_LIPS) { set.add(c.start); set.add(c.end); }
+    lipIndices = [...set];
+  }
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, sx = 0, sy = 0;
+  for (const i of lipIndices) {
+    const p = lm[i];
+    if (!p) continue;
+    const x = p.x * W, y = p.y * H;
+    sx += x; sy += y;
+    if (x < x0) x0 = x;
+    if (y < y0) y0 = y;
+    if (x > x1) x1 = x;
+    if (y > y1) y1 = y;
+  }
+  if (!isFinite(x0)) return null;
+
+  return {
+    x: sx / lipIndices.length,
+    y: sy / lipIndices.length,
+    rx: (x1 - x0) / 2,
+    ry: (y1 - y0) / 2,
+    reach: Math.max((x1 - x0) / 2, (y1 - y0) / 2) * 1.35,  // 닿았다고 볼 범위
+  };
+}
+
 export class FingerMessage {
   constructor() {
     this.reset();
@@ -84,40 +140,46 @@ export class FingerMessage {
    * @param result 핸드 트래킹 결과
    * @param message 손가락에 표시할 메시지
    */
-  draw(ctx, video, W, H, result, message, t) {
+  draw(ctx, video, W, H, handResult, faceResult, FaceLandmarker, message, t) {
     ctx.drawImage(video, 0, 0, W, H);
 
     const chars = messageChars(message);
-    const hands = (result?.landmarks ?? []).slice(0, 2);
+    const hands = (handResult?.landmarks ?? []).slice(0, 2);
     const size = Math.min(W, H);
+    const lips = lipsOf(faceResult, FaceLandmarker, W, H);
 
-    // 손가락 여덟 개를 화면 왼쪽부터 늘어놓아야 메시지가 읽히는 순서대로 붙는다.
-    // (미러 화면이므로 화면 x는 W - 원본 x)
+    if (lips) this.drawLips(ctx, W, H, lips, t);
+
+    // 메시지가 화면 왼쪽부터 읽히도록, 손은 손목 위치 순으로 손가락은 손등 관절
+    // 위치 순으로 늘어놓는다. (미러 화면이므로 화면 x는 W - 원본 x)
     const tips = [];
-    hands.forEach((lm, handIdx) => {
-      const thumb = lm[THUMB_TIP];
-      const scale =
-        Math.hypot((lm[9].x - lm[0].x) * W, (lm[9].y - lm[0].y) * H) || size * 0.2;
-      FINGERS.forEach((finger, j) => {
-        const p = lm[finger.tip];
-        const x = p.x * W, y = p.y * H;
-        tips.push({
-          key: `${handIdx}:${j}`,
-          x, y,
-          screenX: W - x,
-          touching: Math.hypot((thumb.x - p.x) * W, (thumb.y - p.y) * H) < scale * 0.42,
-        });
+    hands
+      .map((lm, handIdx) => ({ lm, handIdx, wristX: W - lm[0].x * W }))
+      .sort((a, b) => a.wristX - b.wristX)
+      .forEach(({ lm, handIdx }, handOrder) => {
+        FINGERS
+          .map((finger, j) => ({ finger, j, knuckleX: W - lm[finger.mcp].x * W }))
+          .sort((a, b) => a.knuckleX - b.knuckleX)
+          .forEach(({ finger, j }, fingerOrder) => {
+            const p = lm[finger.tip];
+            const x = p.x * W, y = p.y * H;
+            tips.push({
+              key: `${handIdx}:${j}`,
+              slot: handOrder * 4 + fingerOrder,
+              x, y,
+              touching: lips ? Math.hypot(x - lips.x, y - lips.y) < lips.reach : false,
+            });
+          });
       });
-    });
-    tips.sort((a, b) => a.screenX - b.screenX);
 
     const seen = new Set();
-    tips.slice(0, 8).forEach((tip, slot) => {
+    tips.filter((tip) => tip.slot < 8).forEach((tip) => {
+      const slot = tip.slot;
       if (tip.touching) seen.add(tip.key);
 
-      // 맞댄 순간에만 한 번 울린다
+      // 입술에 닿는 순간에만 한 번 읽는다
       if (tip.touching && !this.held.has(tip.key)) {
-        tone(SCALE[slot]);
+        speak(chars[slot], SCALE[slot]);
         this.hits++;
         this.ripples.push({ x: tip.x, y: tip.y, born: t, hue: HUES[slot] });
       }
@@ -128,6 +190,28 @@ export class FingerMessage {
 
     this.held = seen;
     this.drawRipples(ctx, W, H, t, size);
+  }
+
+  /** 입술을 목표 지점으로 표시한다 */
+  drawLips(ctx, W, H, lips, t) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const sx = W - lips.x, sy = lips.y;
+    const pulse = 1 + Math.sin(t / 260) * 0.06;
+
+    ctx.strokeStyle = "rgba(244,114,182,0.85)";
+    ctx.lineWidth = Math.max(2, lips.reach * 0.09);
+    ctx.setLineDash([lips.reach * 0.4, lips.reach * 0.3]);
+    ctx.beginPath();
+    ctx.arc(sx, sy, lips.reach * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "rgba(244,114,182,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, lips.rx, lips.ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   drawLabel(ctx, W, H, x, y, char, hue, active, size, tier = 0) {
