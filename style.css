@@ -192,6 +192,12 @@ button.recording {
   color: var(--muted);
 }
 
+.field .for {
+  color: var(--accent);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 .field input {
   display: block;
   width: 100%;

@@ -13,6 +13,7 @@ import {
 } from "./effects.js";
 
 import { RoachGame, fingertipsOf } from "./roaches.js";
+import { FingerMessage } from "./fingers.js";
 
 const WASM =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
@@ -30,12 +31,13 @@ const btnStart = document.getElementById("btnStart");
 const btnRec = document.getElementById("btnRec");
 const btnShot = document.getElementById("btnShot");
 const bgText = document.getElementById("bgText");
+const fingerMsgEl = document.getElementById("fingerMsg");
 const withAudio = document.getElementById("withAudio");
 const recDot = document.getElementById("recDot");
 const recTime = document.getElementById("recTime");
 
 // 효과 → 필요한 모델 (바퀴벌레 게임은 핸드 트래킹을 재사용한다)
-const TASK_OF = { hand: "hand", face: "face", body: "body", roach: "hand" };
+const TASK_OF = { hand: "hand", face: "face", body: "body", roach: "hand", finger: "hand" };
 
 let effect = "hand";
 let running = false;
@@ -45,6 +47,7 @@ let lastVideoTime = -1;
 let lastResult = null;
 let loopError = false;
 const game = new RoachGame();
+const fingerMsg = new FingerMessage();
 let vision = null;
 const tasks = {};          // 효과별 지연 로딩된 모델
 const loading = {};        // 중복 로딩 방지
@@ -61,6 +64,9 @@ const detectEl = document.getElementById("detect");
 let lastDetectText = "";
 let fpsCount = 0, fpsSince = 0, fps = 0;
 
+let missSince = 0;
+let missShown = false;
+
 function reportDetection(count, label) {
   const now = performance.now();
   fpsCount++;
@@ -69,6 +75,24 @@ function reportDetection(count, label) {
     fpsCount = 0;
     fpsSince = now;
   }
+
+  // 인식이 계속 안 되면 원인 파악에 필요한 값을 알아서 보여준다
+  if (count > 0) {
+    missSince = 0;
+    if (missShown) { note(null); missShown = false; }
+  } else {
+    if (!missSince) missSince = now;
+    if (!missShown && now - missSince > 4000) {
+      missShown = true;
+      const kind = TASK_OF[effect];
+      note(
+        `인식 실패 진단 — 모드 ${runMode[kind]} / 캔버스 ${canvas.width}x${canvas.height} / ` +
+        `영상 ${video.videoWidth}x${video.videoHeight} (readyState ${video.readyState}) / ` +
+        `${fps}fps / 재시작 ${failures[kind] ?? 0}회`
+      );
+    }
+  }
+
   const text = `${count > 0 ? `${label} ${count} 인식됨` : `${label} 인식 안 됨`} · ${fps}fps`;
   if (text === lastDetectText) return;
   lastDetectText = text;
@@ -290,6 +314,7 @@ document.querySelectorAll(".fx").forEach((btn) => {
     lastVideoTime = -1;
     loopError = false;
     if (effect === "roach") game.reset();
+    if (effect === "finger") fingerMsg.reset();
     if (running && !tasks[TASK_OF[effect]]) {
       setStatus("모델 불러오는 중…");
       await getTask(TASK_OF[effect]);
@@ -302,6 +327,15 @@ document.querySelectorAll(".fx").forEach((btn) => {
 
 function loop() {
   if (!running) return;
+
+  // 화면 회전 등으로 카메라 해상도가 바뀌면 캔버스를 맞춘다
+  // (녹화 중에는 스트림이 끊기므로 건드리지 않는다)
+  if (!recorder && video.videoWidth &&
+      (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    lastResult = null;
+  }
 
   const W = canvas.width, H = canvas.height;
   const task = tasks[TASK_OF[effect]];
@@ -318,10 +352,13 @@ function loop() {
 
     // 같은 영상 프레임을 반복해서 넣으면 VIDEO 모드의 트래킹 상태가 흐트러진다.
     // 카메라가 새 프레임을 준 경우에만 추론하고, 그 사이엔 직전 결과를 재사용한다.
-    const fresh = video.currentTime !== lastVideoTime;
+    // 영상 프레임이 아직 준비되지 않았는데 추론을 호출하면 내부에서 ROI가
+    // NaN이 되어 그래프가 영구히 깨진다. 준비된 프레임에서만 추론한다.
+    const ready = video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+    const fresh = ready && video.currentTime !== lastVideoTime;
     if (fresh) lastVideoTime = video.currentTime;
     const detect = () => {
-      if (fresh || !lastResult) {
+      if (ready && (fresh || !lastResult)) {
         const res = runDetect(TASK_OF[effect], task, ts);
         if (res) lastResult = res;   // 실패 시엔 직전 결과를 유지한다
       }
@@ -333,6 +370,10 @@ function loop() {
         const res = detect();
         reportDetection(res.landmarks?.length ?? 0, "손");
         drawHandEffect(ctx, video, W, H, res);
+      } else if (effect === "finger") {
+        const res = detect();
+        reportDetection(res.landmarks?.length ?? 0, "손");
+        fingerMsg.draw(ctx, video, W, H, res, fingerMsgEl.value, ts);
       } else if (effect === "roach") {
         const dt = Math.min(64, lastFrame ? ts - lastFrame : 16);
         const tips = fingertipsOf(detect(), W, H);
