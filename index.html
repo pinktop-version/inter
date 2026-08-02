@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interactive Artwork — MediaPipe</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Interactive Artwork</h1>
+    <p class="sub">MediaPipe Tasks Vision · Hand / Face / Body</p>
+  </header>
+
+  <main>
+    <div class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="status" class="status">카메라 시작을 눌러주세요</div>
+      <div id="recDot" class="rec-dot" hidden><span></span><b id="recTime">0:00</b></div>
+    </div>
+
+    <div class="panel">
+      <section>
+        <h2>1. 카메라</h2>
+        <button id="btnStart" class="primary">카메라 시작</button>
+      </section>
+
+      <section>
+        <h2>2. 효과</h2>
+        <div class="effects">
+          <button class="fx is-on" data-fx="hand">Ch.4 핸드 복제</button>
+          <button class="fx" data-fx="face">Ch.5 페이스 컷아웃</button>
+          <button class="fx" data-fx="body">Ch.6 바디 글로우</button>
+          <button class="fx" data-fx="roach">Ch.7 바퀴벌레 잡기 🪳</button>
+        </div>
+        <label class="field">
+          배경 텍스트
+          <input id="bgText" type="text" value="unknown reality archive POP-UP STORE 2026 03 02 6PM" />
+        </label>
+      </section>
+
+      <section>
+        <h2>3. 저장</h2>
+        <div class="row">
+          <button id="btnRec" disabled>● 녹화 시작</button>
+          <button id="btnShot" disabled>스냅샷 PNG</button>
+        </div>
+        <p class="hint">녹화는 효과가 합성된 화면 그대로 <b>.webm</b> 파일로 저장됩니다.</p>
+        <label class="check"><input id="withAudio" type="checkbox" /> 마이크 소리 함께 녹음</label>
+      </section>
+
+      <p class="note">
+        카메라 권한은 <b>localhost</b> 또는 <b>https</b>에서만 허용됩니다.
+      </p>
+    </div>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
