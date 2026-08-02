@@ -80,27 +80,51 @@ function faceOvalOrder(connections) {
   return order;
 }
 
+// 매 프레임 fillText를 수십 번 호출하면 모바일에서 프레임이 급락한다.
+// 반복 단위를 타일 캔버스에 한 번만 그려두고 패턴으로 채운다.
+let tile = null, tileKey = "", tileW = 1, tileH = 1;
+
+function textTile(text, size) {
+  const key = `${text}|${size}`;
+  if (tileKey === key) return tile;
+
+  const probe = document.createElement("canvas").getContext("2d");
+  const font = `600 ${size}px "Courier New", monospace`;
+  probe.font = font;
+  const line = `${text}   `;
+  const unit = Math.max(1, Math.ceil(probe.measureText(line).width));
+  const step = Math.ceil(size * 1.45);
+
+  const t = document.createElement("canvas");
+  t.width = unit;
+  t.height = step * 2;               // 두 줄을 엇갈리게 배치해 반복 티가 덜 난다
+  const c = t.getContext("2d");
+  c.font = font;
+  c.fillStyle = "rgba(255,255,255,0.82)";
+  c.textBaseline = "top";
+  for (const [y, dx] of [[0, 0], [step, unit / 2]]) {
+    c.fillText(line, dx, y);
+    c.fillText(line, dx - unit, y);  // 이음매가 끊기지 않도록 한 벌 더
+  }
+
+  tile = t; tileKey = key; tileW = unit; tileH = step * 2;
+  return tile;
+}
+
 export function drawTextBackground(ctx, W, H, text, phase) {
+  const size = Math.max(13, Math.round(H / 34));
+  const t = textTile(text, size);
+
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0); // 텍스트는 좌우 반전되지 않도록 미러 해제
   ctx.fillStyle = "#0b0b0b";
   ctx.fillRect(0, 0, W, H);
 
-  const size = Math.max(13, Math.round(H / 34));
-  ctx.font = `600 ${size}px "Courier New", monospace`;
-  ctx.fillStyle = "rgba(255,255,255,0.82)";
-  ctx.textBaseline = "top";
-
-  const line = `${text}   `;
-  const unit = ctx.measureText(line).width || 1;
-  const step = size * 1.45;
-
-  for (let y = -step, row = 0; y < H; y += step, row++) {
-    const drift = ((phase * (row % 2 ? -28 : 28)) % unit) - unit;
-    for (let x = drift; x < W; x += unit) {
-      ctx.fillText(line, x, y);
-    }
-  }
+  const offX = -((phase * 28) % tileW);
+  const pattern = ctx.createPattern(t, "repeat");
+  ctx.setTransform(1, 0, 0, 1, offX, 0);
+  ctx.fillStyle = pattern;
+  ctx.fillRect(-offX, 0, W, H);
   ctx.restore();
 }
 
@@ -123,7 +147,7 @@ export function drawFaceEffect(ctx, video, W, H, result, text, phase, FaceLandma
     ctx.closePath();
 
     ctx.shadowColor = "rgba(255,255,255,0.55)";
-    ctx.shadowBlur = 28;
+    ctx.shadowBlur = Math.round(W / 45); // 해상도에 비례 — 폰에서 과도한 블러 비용을 막는다
     ctx.fill();
     ctx.shadowBlur = 0;
 

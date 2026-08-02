@@ -58,8 +58,17 @@ const setStatus = (msg) => {
 // 인식이 되고 있는지 눈으로 확인할 수 있게 알려준다 (DOM 오버레이라 녹화엔 안 찍힌다)
 const detectEl = document.getElementById("detect");
 let lastDetectText = "";
+let fpsCount = 0, fpsSince = 0, fps = 0;
+
 function reportDetection(count, label) {
-  const text = count > 0 ? `${label} ${count} 인식됨` : `${label} 인식 안 됨`;
+  const now = performance.now();
+  fpsCount++;
+  if (now - fpsSince >= 500) {
+    fps = Math.round((fpsCount * 1000) / (now - fpsSince));
+    fpsCount = 0;
+    fpsSince = now;
+  }
+  const text = `${count > 0 ? `${label} ${count} 인식됨` : `${label} 인식 안 됨`} · ${fps}fps`;
   if (text === lastDetectText) return;
   lastDetectText = text;
   detectEl.textContent = text;
