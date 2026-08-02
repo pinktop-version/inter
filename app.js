@@ -43,6 +43,7 @@ let lastTs = -1;
 let lastFrame = 0;
 let lastVideoTime = -1;
 let lastResult = null;
+let loopError = false;
 const game = new RoachGame();
 let vision = null;
 const tasks = {};          // 효과별 지연 로딩된 모델
@@ -74,6 +75,31 @@ function reportDetection(count, label) {
   detectEl.textContent = text;
   detectEl.classList.toggle("off", count === 0);
   detectEl.hidden = false;
+}
+
+// 디버그 모드: 앱이 얼굴을 화면 어디로 인식하는지 실제 픽셀 값으로 보여준다
+const debugEl = document.getElementById("debug");
+let geomAt = 0;
+function reportGeometry(lm, W, H) {
+  const now = performance.now();
+  if (now - geomAt < 500) return;
+  geomAt = now;
+  if (!lm) {
+    note(`캔버스 ${W}x${H} / 영상 ${video.videoWidth}x${video.videoHeight} / 얼굴 없음`);
+    return;
+  }
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+  for (const p of lm) {
+    if (p.x < x0) x0 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.x > x1) x1 = p.x;
+    if (p.y > y1) y1 = p.y;
+  }
+  note(
+    `캔버스 ${W}x${H} / 영상 ${video.videoWidth}x${video.videoHeight} / 점 ${lm.length}개 / ` +
+    `얼굴 ${Math.round(x0 * W)},${Math.round(y0 * H)} ~ ${Math.round(x1 * W)},${Math.round(y1 * H)} ` +
+    `(${Math.round((x1 - x0) * W)}x${Math.round((y1 - y0) * H)}px)`
+  );
 }
 
 // 폰에서는 콘솔을 볼 수 없으므로 진단 메시지를 화면에 남긴다
@@ -207,6 +233,7 @@ document.querySelectorAll(".fx").forEach((btn) => {
     hasMask = false;
     lastResult = null;
     lastVideoTime = -1;
+    loopError = false;
     if (effect === "roach") game.reset();
     if (running && !tasks[TASK_OF[effect]]) {
       setStatus("모델 불러오는 중…");
@@ -257,8 +284,10 @@ function loop() {
         game.draw(ctx, W, H, tips, ts);
       } else if (effect === "face") {
         const res = detect();
-        reportDetection(res.faceLandmarks?.length ?? 0, "얼굴");
-        drawFaceEffect(ctx, video, W, H, res, bgText.value, ts / 1000, FaceLandmarker);
+        const faces = res.faceLandmarks ?? [];
+        reportDetection(faces.length, "얼굴");
+        drawFaceEffect(ctx, video, W, H, res, bgText.value, ts / 1000, FaceLandmarker, debugEl.checked);
+        if (debugEl.checked) reportGeometry(faces[0], W, H);
       } else {
         if (fresh) {
           task.segmentForVideo(video, ts, (res) => {
@@ -272,7 +301,13 @@ function loop() {
         drawBodyEffect(ctx, video, W, H, hasMask ? maskCanvas : null);
       }
     } catch (err) {
+      // 여기서 조용히 넘어가면 화면이 원본 영상과 효과 사이에서 깜빡이기만 하고
+      // 원인을 알 수 없다. 폰에서도 보이도록 화면에 남긴다.
       console.error(err);
+      if (!loopError) {
+        loopError = true;
+        note(`렌더 오류 [${effect}] ${err.name}: ${err.message}`);
+      }
       ctx.drawImage(video, 0, 0, W, H);
     }
     lastFrame = ts;

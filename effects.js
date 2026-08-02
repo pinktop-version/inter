@@ -128,7 +128,22 @@ export function drawTextBackground(ctx, W, H, text, phase) {
   ctx.restore();
 }
 
-export function drawFaceEffect(ctx, video, W, H, result, text, phase, FaceLandmarker) {
+// 얼굴만 오려내는 작업용 캔버스. clip()은 일부 모바일 GPU에서 트랜스폼과 함께
+// 쓸 때 결과가 비어버리는 경우가 있어, 합성 연산(source-in)으로 대체한다.
+const faceCut = document.createElement("canvas");
+const fctx = faceCut.getContext("2d");
+
+function faceOvalPath(target, lm, order, W, H) {
+  target.beginPath();
+  order.forEach((idx, i) => {
+    const p = lm[idx];
+    const x = p.x * W, y = p.y * H;
+    i === 0 ? target.moveTo(x, y) : target.lineTo(x, y);
+  });
+  target.closePath();
+}
+
+export function drawFaceEffect(ctx, video, W, H, result, text, phase, FaceLandmarker, debug) {
   drawTextBackground(ctx, W, H, text, phase);
 
   const faces = result?.faceLandmarks ?? [];
@@ -136,23 +151,38 @@ export function drawFaceEffect(ctx, video, W, H, result, text, phase, FaceLandma
 
   const order = faceOvalOrder(FaceLandmarker.FACE_LANDMARKS_FACE_OVAL);
 
+  if (faceCut.width !== W || faceCut.height !== H) {
+    faceCut.width = W;
+    faceCut.height = H;
+  }
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  fctx.clearRect(0, 0, W, H);
+
+  // 얼굴 윤곽을 채워 마스크를 만든 뒤, 그 안쪽만 영상으로 바꿔치기한다
+  fctx.fillStyle = "#fff";
   for (const lm of faces) {
+    faceOvalPath(fctx, lm, order, W, H);
+    fctx.fill();
+  }
+  fctx.globalCompositeOperation = "source-in";
+  fctx.drawImage(video, 0, 0, W, H);
+  fctx.globalCompositeOperation = "source-over";
+
+  // 미러 트랜스폼이 걸린 본 캔버스에 그대로 얹는다
+  ctx.save();
+  ctx.shadowColor = "rgba(255,255,255,0.55)";
+  ctx.shadowBlur = Math.round(W / 45);
+  ctx.drawImage(faceCut, 0, 0, W, H);
+  ctx.restore();
+
+  if (debug) {
     ctx.save();
-    ctx.beginPath();
-    order.forEach((idx, i) => {
-      const p = lm[idx];
-      const x = p.x * W, y = p.y * H;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.closePath();
-
-    ctx.shadowColor = "rgba(255,255,255,0.55)";
-    ctx.shadowBlur = Math.round(W / 45); // 해상도에 비례 — 폰에서 과도한 블러 비용을 막는다
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    ctx.clip();
-    ctx.drawImage(video, 0, 0, W, H);
+    ctx.strokeStyle = "#22d3ee";
+    ctx.lineWidth = Math.max(2, W / 200);
+    for (const lm of faces) {
+      faceOvalPath(ctx, lm, order, W, H);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
