@@ -41,6 +41,8 @@ let effect = "hand";
 let running = false;
 let lastTs = -1;
 let lastFrame = 0;
+let lastVideoTime = -1;
+let lastResult = null;
 const game = new RoachGame();
 let vision = null;
 const tasks = {};          // 효과별 지연 로딩된 모델
@@ -52,6 +54,18 @@ const setStatus = (msg) => {
   statusEl.hidden = !msg;
   statusEl.textContent = msg ?? "";
 };
+
+// 인식이 되고 있는지 눈으로 확인할 수 있게 알려준다 (DOM 오버레이라 녹화엔 안 찍힌다)
+const detectEl = document.getElementById("detect");
+let lastDetectText = "";
+function reportDetection(count, label) {
+  const text = count > 0 ? `${label} ${count} 인식됨` : `${label} 인식 안 됨`;
+  if (text === lastDetectText) return;
+  lastDetectText = text;
+  detectEl.textContent = text;
+  detectEl.classList.toggle("off", count === 0);
+  detectEl.hidden = false;
+}
 
 // 폰에서는 콘솔을 볼 수 없으므로 진단 메시지를 화면에 남긴다
 const noteEl = document.getElementById("note");
@@ -91,14 +105,21 @@ async function openCamera() {
 
 function createTask(kind, delegate) {
   const baseOptions = { modelAssetPath: MODELS[kind], delegate };
+  // 기본 임계값(0.5)은 웹캠 화질·조명에서 놓치는 경우가 많아 낮춘다
   if (kind === "hand") {
     return HandLandmarker.createFromOptions(vision, {
       baseOptions, runningMode: "VIDEO", numHands: 2,
+      minHandDetectionConfidence: 0.3,
+      minHandPresenceConfidence: 0.3,
+      minTrackingConfidence: 0.3,
     });
   }
   if (kind === "face") {
     return FaceLandmarker.createFromOptions(vision, {
       baseOptions, runningMode: "VIDEO", numFaces: 1,
+      minFaceDetectionConfidence: 0.3,
+      minFacePresenceConfidence: 0.3,
+      minTrackingConfidence: 0.3,
     });
   }
   return ImageSegmenter.createFromOptions(vision, {
@@ -175,6 +196,8 @@ document.querySelectorAll(".fx").forEach((btn) => {
     btn.classList.add("is-on");
     effect = btn.dataset.fx;
     hasMask = false;
+    lastResult = null;
+    lastVideoTime = -1;
     if (effect === "roach") game.reset();
     if (running && !tasks[TASK_OF[effect]]) {
       setStatus("모델 불러오는 중…");
@@ -202,29 +225,41 @@ function loop() {
     if (ts <= lastTs) ts = lastTs + 1;   // 타임스탬프는 반드시 증가해야 한다
     lastTs = ts;
 
+    // 같은 영상 프레임을 반복해서 넣으면 VIDEO 모드의 트래킹 상태가 흐트러진다.
+    // 카메라가 새 프레임을 준 경우에만 추론하고, 그 사이엔 직전 결과를 재사용한다.
+    const fresh = video.currentTime !== lastVideoTime;
+    if (fresh) lastVideoTime = video.currentTime;
+    const detect = () => {
+      if (fresh || !lastResult) lastResult = task.detectForVideo(video, ts);
+      return lastResult;
+    };
+
     try {
       if (effect === "hand") {
-        drawHandEffect(ctx, video, W, H, task.detectForVideo(video, ts));
+        const res = detect();
+        reportDetection(res.landmarks?.length ?? 0, "손");
+        drawHandEffect(ctx, video, W, H, res);
       } else if (effect === "roach") {
         const dt = Math.min(64, lastFrame ? ts - lastFrame : 16);
-        const tips = fingertipsOf(task.detectForVideo(video, ts), W, H);
+        const tips = fingertipsOf(detect(), W, H);
+        reportDetection(tips.length, "검지");
         ctx.drawImage(video, 0, 0, W, H);
         game.update(dt, W, H, tips, ts);
         game.draw(ctx, W, H, tips, ts);
       } else if (effect === "face") {
-        drawFaceEffect(
-          ctx, video, W, H,
-          task.detectForVideo(video, ts),
-          bgText.value, ts / 1000, FaceLandmarker
-        );
+        const res = detect();
+        reportDetection(res.faceLandmarks?.length ?? 0, "얼굴");
+        drawFaceEffect(ctx, video, W, H, res, bgText.value, ts / 1000, FaceLandmarker);
       } else {
-        task.segmentForVideo(video, ts, (res) => {
-          if (res.categoryMask) {
-            maskToCanvas(res.categoryMask, maskCanvas);
-            hasMask = true;
-            res.close();
-          }
-        });
+        if (fresh) {
+          task.segmentForVideo(video, ts, (res) => {
+            if (res.categoryMask) {
+              maskToCanvas(res.categoryMask, maskCanvas);
+              hasMask = true;
+              res.close();
+            }
+          });
+        }
         drawBodyEffect(ctx, video, W, H, hasMask ? maskCanvas : null);
       }
     } catch (err) {

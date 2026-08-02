@@ -231,6 +231,26 @@ button.recording {
   line-height: 1.5;
 }
 
+/* 인식 상태 표시 — DOM 오버레이라 녹화 영상에는 찍히지 않는다 */
+.detect {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(6, 78, 59, 0.75);
+  color: #6ee7b7;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.detect.off {
+  background: rgba(69, 26, 3, 0.75);
+  color: #fdba74;
+}
+
+.detect[hidden] { display: none; }
+
 /* 폰에서 콘솔 없이 실패 원인을 확인하기 위한 진단 표시 */
 .diag {
   margin: 12px 0 0;
