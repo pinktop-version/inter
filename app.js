@@ -6,7 +6,6 @@ import {
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1";
 
 import {
-  drawHandEffect,
   drawFaceEffect,
   drawBodyEffect,
   maskToCanvas,
@@ -39,19 +38,18 @@ const recTime = document.getElementById("recTime");
 // 효과 → 필요한 모델 (바퀴벌레 게임은 핸드 트래킹을 재사용한다)
 // 효과마다 필요한 모델. 손가락 메시지는 손과 얼굴을 함께 쓴다.
 const TASKS_FOR = {
-  hand: ["hand"],
-  face: ["face"],
-  body: ["body"],
   roach: ["hand"],
   finger: ["hand", "face"],
   melody: ["hand"],
+  face: ["face"],
+  body: ["body"],
 };
 const TASK_OF = {
-  hand: "hand", face: "face", body: "body",
   roach: "hand", finger: "hand", melody: "hand",
+  face: "face", body: "body",
 };
 
-let effect = "hand";
+let effect = "roach";
 let running = false;
 let lastTs = -1;
 let lastFrame = 0;
@@ -408,11 +406,7 @@ function loop() {
     const detect = () => detectOf(TASK_OF[effect]);
 
     try {
-      if (effect === "hand") {
-        const res = detect();
-        reportDetection(res.landmarks?.length ?? 0, "손");
-        drawHandEffect(ctx, video, W, H, res);
-      } else if (effect === "finger") {
+      if (effect === "finger") {
         const hands = detectOf("hand");
         const face = detectOf("face");
         reportDetection(hands.landmarks?.length ?? 0, "손");

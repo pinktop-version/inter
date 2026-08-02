@@ -1,67 +1,7 @@
-// 챕터 4/5/6에 대응하는 세 가지 캔버스 효과.
+// 페이스 컷아웃 / 바디 글로우 캔버스 효과.
 // 호출 시점의 ctx 트랜스폼은 셀피 미러링 상태이며, 좌표계는 비디오 원본 픽셀 기준이다.
 
-const seeded = (i) => {
-  const x = Math.sin(i * 127.1) * 43758.5453;
-  return x - Math.floor(x);
-};
-
-function boundsOf(landmarks, W, H, pad) {
-  let minX = 1, minY = 1, maxX = 0, maxY = 0;
-  for (const p of landmarks) {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-  const w = (maxX - minX) * W, h = (maxY - minY) * H;
-  const sx = minX * W - w * pad;
-  const sy = minY * H - h * pad;
-  const sw = w * (1 + pad * 2);
-  const sh = h * (1 + pad * 2);
-  return {
-    sx: Math.max(0, sx),
-    sy: Math.max(0, sy),
-    sw: Math.min(sw, W - Math.max(0, sx)),
-    sh: Math.min(sh, H - Math.max(0, sy)),
-  };
-}
-
-/* ── Chapter 4 : 핸드 복제 ────────────────────────────── */
-
-export function drawHandEffect(ctx, video, W, H, result) {
-  ctx.drawImage(video, 0, 0, W, H);
-  const hands = result?.landmarks ?? [];
-  const COPIES = 14;
-
-  for (let h = 0; h < hands.length; h++) {
-    const b = boundsOf(hands[h], W, H, 0.3);
-    if (b.sw < 8 || b.sh < 8) continue;
-
-    const cx = b.sx + b.sw / 2;
-    const cy = b.sy + b.sh / 2;
-    const reach = Math.max(b.sw, b.sh);
-
-    for (let i = 0; i < COPIES; i++) {
-      const s = i + h * 100;
-      const angle = (i / COPIES) * Math.PI * 2 + seeded(s) * 0.5;
-      const dist = reach * (0.55 + seeded(s + 31) * 1.15);
-      const scale = 0.7 - (i / COPIES) * 0.4 + seeded(s + 57) * 0.2;
-
-      ctx.save();
-      ctx.globalAlpha = 0.9 - (i / COPIES) * 0.45;
-      ctx.translate(cx + Math.cos(angle) * dist, cy + Math.sin(angle) * dist);
-      ctx.rotate(angle + Math.PI / 2);
-      ctx.drawImage(
-        video, b.sx, b.sy, b.sw, b.sh,
-        -b.sw * scale / 2, -b.sh * scale / 2, b.sw * scale, b.sh * scale
-      );
-      ctx.restore();
-    }
-  }
-}
-
-/* ── Chapter 5 : 페이스 컷아웃 + 텍스트 배경 ──────────── */
+/* ── 페이스 컷아웃 + 텍스트 배경 ─────────────────────── */
 
 // FACE_OVAL 커넥션 배열({start,end})을 하나의 닫힌 경로 순서로 정렬한다.
 let ovalOrder = null;
@@ -187,7 +127,7 @@ export function drawFaceEffect(ctx, video, W, H, result, text, phase, FaceLandma
   }
 }
 
-/* ── Chapter 6 : 바디 글로우 ──────────────────────────── */
+/* ── 바디 글로우 ─────────────────────────────────────── */
 
 const glow = document.createElement("canvas");
 const gctx = glow.getContext("2d");
